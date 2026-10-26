@@ -1,9 +1,19 @@
-"""Multimodal Construction Intelligence Platform (Skill Wallet Capstone Project 1)."""
+"""Multimodal Construction Intelligence Platform (Skill Wallet Capstone Project 1).
+
+Setup:
+    pip install streamlit pillow google-genai
+Run:
+    streamlit run app.py
+Optional: set the GEMINI_API_KEY environment variable to pre-fill the key.
+"""
+import html
 import json
+import os
+import re
 import urllib.parse
 
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageOps
 
 st.set_page_config(page_title="Construction Intelligence Platform", page_icon="🏗️", layout="wide")
 
@@ -11,8 +21,8 @@ st.markdown("""
 <style>
 .hero{padding:1.1rem 1.4rem;border-radius:14px;background:linear-gradient(120deg,#0f2027,#2c5364);color:#fff;margin-bottom:1rem}
 .hero h1{margin:0;font-size:1.7rem}.hero p{margin:.2rem 0 0;opacity:.8}
-.card{padding:.9rem 1rem;border-radius:12px;border:1px solid rgba(128,128,128,.25);background:rgba(128,128,128,.07)}
-.card .v{font-size:1.6rem;font-weight:700}.card .l{font-size:.8rem;opacity:.7;text-transform:uppercase;letter-spacing:.04em}
+.card{padding:.9rem 1rem;border-radius:12px;border:1px solid rgba(128,128,128,.25);background:rgba(128,128,128,.07);min-height:84px}
+.card .v{font-size:1.4rem;font-weight:700}.card .l{font-size:.8rem;opacity:.7;text-transform:uppercase;letter-spacing:.04em}
 .pill{display:inline-block;padding:.15rem .7rem;border-radius:999px;font-weight:600;font-size:.82rem;color:#fff}
 </style>
 """, unsafe_allow_html=True)
@@ -22,11 +32,14 @@ SEV_COLOR = {"Low": "#2e9e5b", "Medium": "#d9a400", "High": "#e8710a", "Critical
 
 
 def pill(text):
-    return f'<span class="pill" style="background:{SEV_COLOR.get(text, "#546e7a")}">{text}</span>'
+    text = str(text)
+    return f'<span class="pill" style="background:{SEV_COLOR.get(text, "#546e7a")}">{html.escape(text)}</span>'
 
 
-def card(label, value):
-    st.markdown(f'<div class="card"><div class="l">{label}</div><div class="v">{value}</div></div>',
+def card(label, value, raw=False):
+    """Metric card. `value` is HTML-escaped unless raw=True (model output must stay escaped)."""
+    v = value if raw else html.escape(str(value))
+    st.markdown(f'<div class="card"><div class="l">{html.escape(label)}</div><div class="v">{v}</div></div>',
                 unsafe_allow_html=True)
 
 
@@ -34,12 +47,42 @@ def inr(x):
     return f"₹{x / 1e7:.2f} Cr" if x >= 1e7 else f"₹{x / 1e5:.2f} Lakh"
 
 
+def show_image(src, **kw):
+    """st.image wrapper that works on both old and new Streamlit versions."""
+    try:
+        st.image(src, width="stretch", **kw)
+    except Exception:
+        st.image(src, use_container_width=True, **kw)
+
+
+def load_image(upload):
+    img = Image.open(upload)
+    img = ImageOps.exif_transpose(img).convert("RGB")  # fix phone-photo rotation
+    img.thumbnail((1600, 1600))  # keep API payload small
+    return img
+
+
+def file_sig(upload):
+    return f"{upload.name}:{upload.size}"
+
+
+def to_int(x, default=0):
+    try:
+        return int(float(x))
+    except (TypeError, ValueError):
+        return default
+
+
 # ---------------------------------------------------------------- AI layer
-def get_model(api_key, model_name, json_mode=True, system=None):
-    import google.generativeai as genai
-    genai.configure(api_key=api_key)
-    cfg = {"response_mime_type": "application/json"} if json_mode else None
-    return genai.GenerativeModel(model_name, generation_config=cfg, system_instruction=system)
+def get_client(api_key):
+    from google import genai  # pip install google-genai
+    return genai.Client(api_key=api_key)
+
+
+def parse_json(text):
+    text = (text or "").strip()
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
+    return json.loads(text)
 
 
 def analyze_image(prompt, image, demo_payload):
@@ -48,9 +91,13 @@ def analyze_image(prompt, image, demo_payload):
     if not key:
         return demo_payload, True
     try:
-        resp = get_model(key, st.session_state["model"]).generate_content([prompt, image])
-        txt = resp.text.strip().removeprefix("```json").removesuffix("```").strip()
-        return json.loads(txt), False
+        from google.genai import types
+        resp = get_client(key).models.generate_content(
+            model=st.session_state["model"],
+            contents=[prompt, image],
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        return parse_json(resp.text), False
     except Exception as e:  # network, quota, parse errors
         st.warning(f"Gemini call failed ({e}). Showing demonstration output instead.")
         return demo_payload, True
@@ -88,10 +135,14 @@ DEMO_CRACK = {"defect_type": "Structural Shear", "estimated_width_mm": 2.8, "sev
 # ---------------------------------------------------------------- Sidebar
 with st.sidebar:
     st.header("🏗️ Control Panel")
-    st.session_state["api_key"] = st.text_input("Google Gemini API Key", type="password",
-                                                help="Leave empty for demonstration mode.")
-    st.session_state["model"] = st.selectbox("Model", ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"])
-    st.success("Live AI mode") if st.session_state["api_key"] else st.info("Demonstration mode (no key)")
+    st.text_input("Google Gemini API Key", type="password", key="api_key",
+                  value=os.getenv("GEMINI_API_KEY", ""),
+                  help="Leave empty for demonstration mode.")
+    st.selectbox("Model", ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], key="model")
+    if st.session_state.get("api_key"):
+        st.success("Live AI mode")
+    else:
+        st.info("Demonstration mode (no key)")
     st.divider()
     st.subheader("Architecture")
     st.markdown("""
@@ -111,31 +162,36 @@ t1, t2, t3, t4 = st.tabs(["🦺 Safety & PPE", "🧱 Crack Diagnostics", "📐 P
 
 # ---------------------------------------------------------------- Tab 1
 with t1:
-    up = st.file_uploader("Upload site photo", type=["jpg", "jpeg", "png"], key="ppe")
+    up = st.file_uploader("Upload site photo", type=["jpg", "jpeg", "png"], key="ppe_upload")
     if up:
-        img = Image.open(up).convert("RGB")
+        img = load_image(up)
         c1, c2 = st.columns([1, 1.3])
-        c1.image(img, use_container_width=True)
-        if c2.button("Run safety audit", type="primary"):
+        with c1:
+            show_image(img)
+        if c2.button("Run safety audit", type="primary", key="ppe_btn"):
             with st.spinner("Analysing PPE compliance..."):
-                st.session_state["ppe"], demo = analyze_image(PPE_PROMPT, img, DEMO_PPE)
-        r = st.session_state.get("ppe")
-        if r:
+                data, demo = analyze_image(PPE_PROMPT, img, DEMO_PPE)
+            st.session_state["ppe_result"] = {"sig": file_sig(up), "data": data, "demo": demo}
+        saved = st.session_state.get("ppe_result")
+        if saved and saved["sig"] == file_sig(up):  # only show result for the current image
+            r = saved["data"]
+            score = min(max(to_int(r.get("safety_score")), 0), 100)
             with c2:
+                if saved["demo"]:
+                    st.caption("⚠️ Demonstration output (not a real analysis of this image).")
                 m1, m2, m3 = st.columns(3)
-                with m1: card("Safety score", f"{r.get('safety_score', 0)}/100")
+                with m1: card("Safety score", f"{score}/100")
                 with m2: card("Workers", r.get("workers_detected", "–"))
-                with m3: card("Status", "")
-                st.markdown(pill(r.get("overall_status", "–")), unsafe_allow_html=True)
-                st.progress(min(max(int(r.get("safety_score", 0)), 0), 100) / 100)
+                with m3: card("Status", pill(r.get("overall_status", "–")), raw=True)
+                st.progress(score / 100)
                 st.write(r.get("summary", ""))
                 st.markdown("**PPE checklist**")
-                for k, v in r.get("ppe_detection", {}).items():
-                    st.write(("✅ " if v else "❌ ") + k.replace("_", " ").title())
+                for k, v in (r.get("ppe_detection") or {}).items():
+                    st.write(("✅ " if v else "❌ ") + str(k).replace("_", " ").title())
             st.markdown("### Identified hazards")
             for h in r.get("hazards", []):
-                st.markdown(f"{pill(h.get('severity', 'Low'))} **{h.get('hazard')}** — {h.get('remedy')}",
-                            unsafe_allow_html=True)
+                st.markdown(f"{pill(h.get('severity', 'Low'))} **{html.escape(str(h.get('hazard', '')))}** — "
+                            f"{html.escape(str(h.get('remedy', '')))}", unsafe_allow_html=True)
             st.download_button("⬇️ Download JSON report", json.dumps(r, indent=2), "safety_report.json",
                                "application/json")
     else:
@@ -143,27 +199,32 @@ with t1:
 
 # ---------------------------------------------------------------- Tab 2
 with t2:
-    up = st.file_uploader("Upload concrete / wall surface", type=["jpg", "jpeg", "png"], key="crack")
+    up = st.file_uploader("Upload concrete / wall surface", type=["jpg", "jpeg", "png"], key="crack_upload")
     if up:
-        img = Image.open(up).convert("RGB")
+        img = load_image(up)
         c1, c2 = st.columns([1, 1.3])
-        c1.image(img, use_container_width=True)
-        if c2.button("Diagnose defect", type="primary"):
+        with c1:
+            show_image(img)
+        if c2.button("Diagnose defect", type="primary", key="crack_btn"):
             with st.spinner("Classifying defect..."):
-                st.session_state["crack"], _ = analyze_image(CRACK_PROMPT, img, DEMO_CRACK)
-        r = st.session_state.get("crack")
-        if r:
+                data, demo = analyze_image(CRACK_PROMPT, img, DEMO_CRACK)
+            st.session_state["crack_result"] = {"sig": file_sig(up), "data": data, "demo": demo}
+        saved = st.session_state.get("crack_result")
+        if saved and saved["sig"] == file_sig(up):
+            r = saved["data"]
             with c2:
+                if saved["demo"]:
+                    st.caption("⚠️ Demonstration output (not a real analysis of this image).")
                 a, b, c = st.columns(3)
                 with a: card("Defect", r.get("defect_type", "–"))
                 with b: card("Width", f"{r.get('estimated_width_mm', 0)} mm")
-                with c: card("Severity", f"{r.get('severity_score', 0)}/100")
+                with c: card("Severity", f"{to_int(r.get('severity_score'))}/100")
                 st.markdown("Urgency: " + pill(r.get("urgency", "Low")), unsafe_allow_html=True)
                 st.markdown("**Root causes**")
-                for x in r.get("root_causes", []): st.write("• " + x)
+                for x in r.get("root_causes", []): st.write("• " + str(x))
                 st.markdown("**Recommended repairs**")
-                for x in r.get("recommended_repairs", []): st.write("🔧 " + x)
-                st.info(r.get("monitoring_advice", ""))
+                for x in r.get("recommended_repairs", []): st.write("🔧 " + str(x))
+                st.info(r.get("monitoring_advice", "") or "No monitoring advice returned.")
             st.download_button("⬇️ Download JSON report", json.dumps(r, indent=2), "crack_report.json",
                                "application/json")
     else:
@@ -209,7 +270,8 @@ with t3:
     if st.button("Generate concept render"):
         prompt = f"3D architectural render of a {stype.lower()}, {sqft} sq ft, Indian {tier} city, {style}, photorealistic"
         url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width=1024&height=640&model=flux&nologo=true"
-        st.image(url, caption="Generated via Pollinations (Flux)", use_container_width=True)
+        show_image(url, caption="Generated via Pollinations (Flux)")
+        st.markdown(f"If the image doesn't load, [open it directly]({url}) (needs internet access).")
         st.code(prompt)
 
 # ---------------------------------------------------------------- Tab 4
@@ -247,15 +309,23 @@ with t4:
         with st.chat_message("user"):
             st.write(q)
         key = st.session_state.get("api_key")
-        try:
-            if not key:
-                raise RuntimeError("demo")
-            sys_p = (f"You are a senior civil/construction engineer in India. Today's site weather: {w}. "
-                     "Be concise and practical; cite IS/OSHA codes where relevant.")
-            hist = [{"role": "user" if m["role"] == "user" else "model", "parts": [m["content"]]}
-                    for m in st.session_state["chat"][:-1]]
-            reply = get_model(key, st.session_state["model"], False, sys_p).start_chat(history=hist).send_message(q).text
-        except Exception:
+        reply = None
+        if key:
+            try:
+                from google.genai import types
+                sys_p = (f"You are a senior civil/construction engineer in India. Today's site weather: {w}. "
+                         "Be concise and practical; cite IS/OSHA codes where relevant.")
+                hist = [types.Content(role="user" if m["role"] == "user" else "model",
+                                      parts=[types.Part(text=m["content"])])
+                        for m in st.session_state["chat"][:-1]]
+                session = get_client(key).chats.create(
+                    model=st.session_state["model"],
+                    config=types.GenerateContentConfig(system_instruction=sys_p),
+                    history=hist)
+                reply = session.send_message(q).text
+            except Exception as e:
+                st.warning(f"Gemini call failed ({e}). Using offline answer instead.")
+        if not reply:
             reply = next((v for k, v in FALLBACK.items() if k in q.lower()),
                          f"(Demo mode) With {w.lower()} conditions, follow the alerts above. Add a Gemini key for full answers.")
         st.session_state["chat"].append({"role": "assistant", "content": reply})
