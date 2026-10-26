@@ -4,7 +4,7 @@ A Streamlit decision-support app that analyses construction site photos, diagnos
 
 Built as **Skill Wallet Capstone Project 1** (Generative AI | Real Estate Decision Support).
 
-**🔗 Live demo:** `<paste your Streamlit app link here>`
+**🔗 Live demo:** https://skillwalletproject-hpxkqwquidjwrigyqt2xkh.streamlit.app/ 
 
 <!-- Add a screenshot: upload it to the repo and use ![Screenshot](screenshot.png) -->
 
