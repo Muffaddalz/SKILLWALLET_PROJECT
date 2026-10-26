@@ -32,7 +32,7 @@ Built as **Skill Wallet Capstone Project 1** (Generative AI | Real Estate Decisi
 ## Run Locally
 
 ```bash
-git clone https://github.com/sambhav-jain-ai/skillWallet.git
+git clone https://github.com/Muffaddalz/SKILLWALLET_PROJECT
 cd skillWallet
 pip install -r requirements.txt
 streamlit run app.py
