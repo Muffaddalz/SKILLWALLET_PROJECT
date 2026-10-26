@@ -51,4 +51,4 @@ Deployed on Streamlit Community Cloud: push `app.py` and `requirements.txt` to a
 
 ## Author
 
-Sambhav Jain
+Muffaddal Zia
